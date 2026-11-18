@@ -140,6 +140,17 @@
       <p class="hint"><span data-i18n="revealHint">Passez le téléphone : chacun tape sur son carton, le découvre seul, puis rebascule.</span></p>
       <div id="revealCards" class="reveal-cards"></div>
       <button type="button" id="resetDraw" class="btn btn-ghost">🔄 <span data-i18n="reset">Annuler le tirage</span></button>
+      <div id="remoteArea" class="remote-area">
+        <h3>🌍 Tirage à distance</h3>
+        <p class="hint">Générez un lien chiffré (AES) par participant : chacun ouvre le sien sur son propre téléphone et ne peut dévoiler que SON carton. Les données ne passent jamais par un serveur (chiffrement + fragment d'URL). Une phrase secrète éventuelle doit être envoyée séparément du lien.</p>
+        <input type="text" id="remotePassphrase" placeholder="Phrase secrète (optionnelle — à envoyer séparément)" maxlength="60">
+        <div class="remote-actions">
+          <button type="button" id="genRemote" class="btn btn-secondary">🔐 Générer les liens secrets</button>
+        </div>
+        <div id="remoteError" class="error hidden"></div>
+        <div id="remoteLinks" class="remote-links"></div>
+        <p class="hint hidden" id="remotePassHint">💬 N'oubliez pas d'envoyer la phrase secrète à chacun, séparément du lien (les mots de passe ne sont jamais stockés).</p>
+      </div>
     </div>
   </section>
 </main>
@@ -155,6 +166,25 @@
     <button type="button" id="closeReveal" class="btn btn-primary">✅ <span data-i18n="ok">Repérer le carton</span></button>
   </div>
 </div>
+
+<section id="decryptSection" class="card decrypt-card hidden">
+  <h2>🎅 Ton carton secret</h2>
+  <div id="decryptBox">
+    <p class="hint">Ce lien contient ton carton chiffré. Tape la phrase secrète si ton organisateur t'en a envoyé une, puis déverrouille.</p>
+    <input type="text" id="decryptPass" placeholder="Phrase secrète (si besoin)…" maxlength="60">
+    <div class="remote-actions">
+      <button type="button" id="decryptBtn" class="btn btn-primary">🔓 Déverrouiller mon carton</button>
+    </div>
+    <div id="decryptError" class="error hidden"></div>
+  </div>
+  <div id="decryptResult" class="hidden">
+    <p class="reveal-lead">Tu offres un cadeau à</p>
+    <div class="reveal-name" id="decryptReceiver"></div>
+    <div id="decryptWishlist" class="reveal-wishlist"></div>
+    <p class="gift-note">🤫 Note ton attribution puis ferme cette page !</p>
+    <button type="button" id="redecrypt" class="btn btn-ghost">↩️ Recharger la page</button>
+  </div>
+</section>
 
 <footer>
   <p>🎄 Manchester, England — Merry Christmas & a Happy New Year 🎄</p>

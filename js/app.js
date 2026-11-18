@@ -105,6 +105,7 @@ function renderParticipants() {
         });
         state.assignments = null;
         state.revealed = [];
+        state.remote = null;
         save();
         renderParticipants();
         hideReveal();
@@ -243,6 +244,7 @@ document.getElementById("addForm").addEventListener("submit", e => {
   state.participants.push({ id: uid(), name: name.slice(0, 40), exclusions: [], wishlist: [] });
   state.assignments = null;
   state.revealed = [];
+  state.remote = null;
   input.value = "";
   save();
   renderParticipants();
@@ -305,6 +307,7 @@ document.getElementById("drawBtn").addEventListener("click", () => {
 
   state.assignments = result;
   state.revealed = [];
+  state.remote = null;
   save();
   showReveal();
 });
@@ -313,6 +316,7 @@ document.getElementById("resetDraw").addEventListener("click", () => {
   if (!confirm("Annuler le tirage en cours ?")) return;
   state.assignments = null;
   state.revealed = [];
+  state.remote = null;
   save();
   hideReveal();
 });
@@ -345,10 +349,14 @@ function showReveal() {
   });
 
   area.scrollIntoView({ behavior: "smooth", block: "nearest" });
+
+  document.getElementById("remoteArea").classList.remove("hidden");
+  renderRemoteLinks();
 }
 
 function hideReveal() {
   document.getElementById("revealArea").classList.add("hidden");
+  document.getElementById("remoteArea").classList.add("hidden");
 }
 
 function openReveal(giverId) {
@@ -407,8 +415,274 @@ document.getElementById("closeReveal").addEventListener("click", () => {
   document.getElementById("revealModal").classList.add("hidden");
 });
 
+/* ---------- Liens chiffrés à distance (WebCrypto AES-GCM) ---------- */
+function b64urlEncode(bytes) {
+  let bin = "";
+  bytes.forEach(b => bin += String.fromCharCode(b));
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function b64urlDecode(s) {
+  s = s.replace(/-/g, "+").replace(/_/g, "/");
+  while (s.length % 4) s += "=";
+  const bin = atob(s);
+  return Uint8Array.from(bin, c => c.charCodeAt(0));
+}
+
+async function deriveEncKey(rawKeyBytes, passphrase) {
+  const passBytes = new TextEncoder().encode(passphrase || "");
+  const material = new Uint8Array(rawKeyBytes.length + passBytes.length);
+  material.set(rawKeyBytes, 0);
+  material.set(passBytes, rawKeyBytes.length);
+  const digest = await crypto.subtle.digest("SHA-256", material);
+  return crypto.subtle.importKey("raw", digest, "AES-GCM", false, ["encrypt", "decrypt"]);
+}
+
+async function encryptPayload(obj, passphrase) {
+  const rawKey = crypto.getRandomValues(new Uint8Array(32));
+  const key = await deriveEncKey(rawKey, passphrase);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const data = new TextEncoder().encode(JSON.stringify(obj));
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, data));
+  return b64urlEncode(ct) + "." + b64urlEncode(iv) + "." + b64urlEncode(rawKey);
+}
+
+async function decryptToken(token, passphrase) {
+  const parts = String(token || "").split(".");
+  if (parts.length !== 3) throw new Error("format");
+  const rawKey = b64urlDecode(parts[2]);
+  const iv = b64urlDecode(parts[1]);
+  const ct = b64urlDecode(parts[0]);
+  const key = await deriveEncKey(rawKey, passphrase);
+  const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
+  return JSON.parse(new TextDecoder().decode(pt));
+}
+
+function wishlistItems(receiver) {
+  return receiver.wishlist.filter(w => (w.label || "").trim() || (w.url || "").trim());
+}
+
+function renderWishlistInto(container, receiver) {
+  container.innerHTML = "";
+  const items = wishlistItems(receiver);
+  const h4 = document.createElement("h4");
+  h4.textContent = items.length
+    ? "Liste de souhaits de " + receiver.name + " :"
+    : receiver.name + " n'a pas encore renseigné de liste de souhaits.";
+  container.appendChild(h4);
+
+  items.forEach(w => {
+    const label = (w.label || "").trim() || "Cadeau mystère 🎁";
+    const a = document.createElement("a");
+    a.textContent = label;
+    if ((w.url || "").trim() && /^https?:\/\//i.test(w.url.trim())) {
+      a.href = w.url.trim();
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      const gl = document.createElement("span");
+      gl.className = "glink";
+      gl.textContent = "🔗 ouvrir le lien";
+      a.appendChild(gl);
+    } else {
+      a.href = "#";
+      a.addEventListener("click", e => e.preventDefault());
+    }
+    container.appendChild(a);
+  });
+}
+
+function remoteBaseUrl() {
+  return location.href.split("#")[0];
+}
+
+async function generateRemoteLinks() {
+  const err = document.getElementById("remoteError");
+  err.classList.add("hidden");
+  if (!state.assignments) return;
+
+  if (!window.crypto || !crypto.subtle) {
+    err.textContent = "Le navigateur ne supporte pas le chiffrement (HTTPS requis).";
+    err.classList.remove("hidden");
+    return;
+  }
+
+  const passphrase = document.getElementById("remotePassphrase").value.trim();
+  const links = [];
+  try {
+    for (const p of state.participants) {
+      const receiver = byId(state.assignments[p.id]);
+      if (!receiver) throw new Error("attribution introuvable pour " + p.name);
+      const payload = {
+        t: "santa",
+        g: p.name,
+        r: receiver.name,
+        wl: wishlistItems(receiver).map(w => ({ l: (w.label || "").trim(), u: (w.url || "").trim() }))
+      };
+      links.push({ id: p.id, name: p.name, token: await encryptPayload(payload, passphrase) });
+    }
+  } catch (e) {
+    err.textContent = "Chiffrement impossible : " + e.message;
+    err.classList.remove("hidden");
+    return;
+  }
+
+  state.remote = { hasPassphrase: passphrase.length > 0, links };
+  save();
+  document.getElementById("remotePassHint").classList.toggle("hidden", passphrase.length === 0);
+  renderRemoteLinks();
+}
+
+function remoteLink(token) {
+  return remoteBaseUrl() + "#c=" + token;
+}
+
+function remoteMessage(entry) {
+  return "🎅 Secret Santa — Salut " + entry.name + " ! Ouvre ton carton secret ici 👉 " +
+    remoteLink(entry.token) +
+    (state.remote && state.remote.hasPassphrase
+      ? "\n💬 Phrase secrète : je te l'envoie à part !"
+      : "");
+}
+
+function renderRemoteLinks() {
+  const box = document.getElementById("remoteLinks");
+  box.innerHTML = "";
+  if (!state.remote || !Array.isArray(state.remote.links)) return;
+
+  state.remote.links.forEach(entry => {
+    const p = byId(entry.id);
+    if (!p) return;
+    const row = document.createElement("div");
+    row.className = "remote-row";
+
+    const name = document.createElement("span");
+    name.className = "r-name";
+    name.textContent = p.name;
+
+    const copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.className = "mini-btn";
+    copyBtn.textContent = "📋 Message";
+    copyBtn.setAttribute("aria-label", "Copier le message pour " + p.name);
+    copyBtn.addEventListener("click", () => {
+      copyText(remoteMessage(entry));
+      copyBtn.textContent = "✔ Copié !";
+      setTimeout(() => { copyBtn.textContent = "📋 Message"; }, 1600);
+    });
+
+    const openBtn = document.createElement("button");
+    openBtn.type = "button";
+    openBtn.className = "mini-btn";
+    openBtn.textContent = "🔗 Tester";
+    openBtn.setAttribute("aria-label", "Tester le carton de " + p.name);
+    openBtn.addEventListener("click", () => {
+      window.open(remoteLink(entry.token), "_blank", "noopener");
+    });
+
+    row.append(name, openBtn, copyBtn);
+    box.appendChild(row);
+  });
+}
+
+function copyText(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
+  } else {
+    fallbackCopy(text);
+  }
+}
+
+function fallbackCopy(text) {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand("copy"); } catch (e) { /* ancien navigateur */ }
+  document.body.removeChild(ta);
+}
+
+document.getElementById("genRemote").addEventListener("click", generateRemoteLinks);
+
+/* ---------- Mode « ouverture de carton » (lien distant) ---------- */
+
+const DECRYPT = { token: "" };
+
+function enterDecryptMode() {
+  ["snowLayer", "hero", "participantsSection", "editorSection", "drawSection", "footer"]
+    .forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.classList.add("hidden");
+    });
+  const section = document.getElementById("decryptSection");
+  section.classList.remove("hidden");
+  document.getElementById("decryptResult").classList.add("hidden");
+  document.getElementById("decryptBox").classList.remove("hidden");
+  document.getElementById("decryptPass").value = "";
+  document.getElementById("decryptError").classList.add("hidden");
+}
+
+async function tryDecrypt() {
+  const err = document.getElementById("decryptError");
+  err.classList.add("hidden");
+
+  if (!DECRYPT.token) {
+    err.textContent = "❌ Aucun carton chiffré dans le lien.";
+    err.classList.remove("hidden");
+    return;
+  }
+  if (!window.crypto || !crypto.subtle) {
+    err.textContent = "Ce navigateur ne supporte pas le déchiffrement (HTTPS requis).";
+    err.classList.remove("hidden");
+    return;
+  }
+
+  const passphrase = document.getElementById("decryptPass").value.trim();
+  let payload;
+  try {
+    payload = await decryptToken(DECRYPT.token, passphrase);
+    if (!payload || payload.t !== "santa" || !payload.r) throw new Error("contenu invalide");
+  } catch (e) {
+    const wrong = e.name === "OperationError" || e.message === "format";
+    err.textContent = wrong
+      ? "❌ Phrase secrète incorrecte ou lien invalide."
+      : "❌ Ouverture impossible : " + e.message;
+    err.classList.remove("hidden");
+    return;
+  }
+
+  document.getElementById("decryptBox").classList.add("hidden");
+  document.getElementById("decryptResult").classList.remove("hidden");
+  document.getElementById("decryptReceiver").textContent = payload.r;
+  renderWishlistInto(document.getElementById("decryptWishlist"), {
+    name: payload.r,
+    wishlist: (payload.wl || []).map(w => ({ label: w.l, url: w.u }))
+  });
+  history.replaceState(null, "", location.pathname + location.search);
+}
+
+document.getElementById("decryptBtn").addEventListener("click", tryDecrypt);
+document.getElementById("decryptPass").addEventListener("keydown", e => {
+  if (e.key === "Enter") tryDecrypt();
+});
+document.getElementById("redecrypt").addEventListener("click", () => {
+  window.location.reload();
+});
+
+function setupDecryptMode() {
+  if (!/^#c=/.test(location.hash)) return false;
+  if (!window.crypto || !crypto.subtle) return false;
+  DECRYPT.token = location.hash.replace(/^#c=/, "");
+  enterDecryptMode();
+  history.replaceState(null, "", location.pathname + location.search);
+  return true;
+}
+
 /* ---------- Init ---------- */
 load();
 initSnow();
-renderParticipants();
-if (state.assignments) showReveal();
+if (!setupDecryptMode()) {
+  renderParticipants();
+  if (state.assignments) showReveal();
+}
